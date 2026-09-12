@@ -167,14 +167,73 @@ inline void initDisplay(uint16_t bgColor = TFT_BLACK) {
 // =========================================================================
 //  LVGL INTEGRATION HELPERS (Automatically compiled when lvgl.h is included)
 // =========================================================================
-#if defined(LV_CONF_H) || defined(LV_CONF_INCLUDE_SIMPLE) || defined(_LVGL_H) || defined(LVGL_H)
+#if defined(LV_CONF_H) || defined(LV_CONF_INCLUDE_SIMPLE) || defined(_LVGL_H) || defined(_LVGL_H_) || defined(LVGL_H) || defined(LV_VERSION_CHECK)
 
-// 40-line buffer for memory-efficient display rendering on RP2040
+#if defined(LVGL_VERSION_MAJOR) && (LVGL_VERSION_MAJOR >= 9)
+// =========================================================================
+//  LVGL 9.x DRIVERS (Modern Display & Touch API)
+// =========================================================================
+#define LVGL_BUFFER_LINES 30
+static uint32_t lv_draw_buf[SCREEN_WIDTH * LVGL_BUFFER_LINES * sizeof(uint16_t) / 4];
+static lv_display_t * lv_disp = NULL;
+static lv_indev_t   * lv_indev = NULL;
+
+static inline uint32_t lvgl_tick_cb() {
+  return millis();
+}
+
+inline void lvgl_display_flush(lv_display_t *disp, const lv_area_t *area, uint8_t * px_map) {
+  uint32_t w = (area->x2 - area->x1 + 1);
+  uint32_t h = (area->y2 - area->y1 + 1);
+
+  display.startWrite();
+  display.setAddrWindow(area->x1, area->y1, w, h);
+  display.writePixels((lgfx::rgb565_t *)px_map, w * h);
+  display.endWrite();
+
+  lv_display_flush_ready(disp);
+}
+
+inline void lvgl_touchpad_read(lv_indev_t * indev, lv_indev_data_t * data) {
+  int32_t touchX, touchY;
+  if (TouchCalib::getPoint(&touchX, &touchY)) {
+    data->state   = LV_INDEV_STATE_PRESSED;
+    data->point.x = (int32_t)touchX;
+    data->point.y = (int32_t)touchY;
+  } else {
+    data->state   = LV_INDEV_STATE_RELEASED;
+  }
+}
+
+inline void initLVGL() {
+  initDisplay();
+
+  lv_init();
+  lv_tick_set_cb(lvgl_tick_cb);
+
+  lv_disp = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
+  lv_display_set_flush_cb(lv_disp, lvgl_display_flush);
+  lv_display_set_buffers(lv_disp, lv_draw_buf, NULL, sizeof(lv_draw_buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+  lv_indev = lv_indev_create();
+  lv_indev_set_type(lv_indev, LV_INDEV_TYPE_POINTER);
+  lv_indev_set_read_cb(lv_indev, lvgl_touchpad_read);
+
+  // Poll touch controller at 100Hz (10ms) instead of standard 30ms for zero input lag
+  lv_timer_t * indev_timer = lv_indev_get_read_timer(lv_indev);
+  if (indev_timer) {
+    lv_timer_set_period(indev_timer, 10);
+  }
+}
+
+#else
+// =========================================================================
+//  LVGL 8.x DRIVERS (Legacy Display & Touch API)
+// =========================================================================
 #define LVGL_BUFFER_LINES 40
 static lv_disp_draw_buf_t lv_draw_buf;
 static lv_color_t         lv_buf[SCREEN_WIDTH * LVGL_BUFFER_LINES];
 
-// LVGL Display Flush Callback
 inline void lvgl_display_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
@@ -187,7 +246,6 @@ inline void lvgl_display_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_co
   lv_disp_flush_ready(disp);
 }
 
-// LVGL Touchpad Read Callback
 inline void lvgl_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
   int32_t touchX, touchY;
   if (TouchCalib::getPoint(&touchX, &touchY)) {
@@ -199,14 +257,12 @@ inline void lvgl_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *da
   }
 }
 
-// One-line initializer for LVGL + Display + Touch
 inline void initLVGL() {
   initDisplay();
 
   lv_init();
   lv_disp_draw_buf_init(&lv_draw_buf, lv_buf, NULL, SCREEN_WIDTH * LVGL_BUFFER_LINES);
 
-  // Initialize display driver
   static lv_disp_drv_t disp_drv;
   lv_disp_drv_init(&disp_drv);
   disp_drv.hor_res  = SCREEN_WIDTH;
@@ -215,13 +271,14 @@ inline void initLVGL() {
   disp_drv.draw_buf = &lv_draw_buf;
   lv_disp_drv_register(&disp_drv);
 
-  // Initialize input (touch) driver
   static lv_indev_drv_t indev_drv;
   lv_indev_drv_init(&indev_drv);
   indev_drv.type    = LV_INDEV_TYPE_POINTER;
   indev_drv.read_cb = lvgl_touchpad_read;
   lv_indev_drv_register(&indev_drv);
 }
+
+#endif
 
 #endif // LVGL integration
 
